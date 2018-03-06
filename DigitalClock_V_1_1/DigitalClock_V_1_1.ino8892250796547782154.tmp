@@ -1,0 +1,554 @@
+/* Digital Alarm Clock by Alan Fernandez 
+ * Using Time and DS1307RTC libraries.
+ * Version 1.2 (Fixes) - 12/6/15 8:33:00PM UTC -5:00
+ * 
+ * Remarks:
+ *  Working:
+ *    Time Setting
+ *    Date Setting
+ *    Buzz on click
+ *  Not Working:
+ *    Alarm Setting 
+ *    Button navigation is glitchy
+ *    Setting time or date -> Nothing shows up
+ *  To Be Implemented:
+ *    Pillow Sensor  
+ *    Automatic Brightness adjust with PWM + LD
+ *    Make the date be changed once a day instead of every second
+ *  Fixed:
+ *    Back to display time -> Nothing shows up or garbled junk 
+ */
+#include <Wire.h>
+//#include <EEPROM.h>
+#include <TimeAlarms.h>
+#include <DS1307RTC.h>
+#include <Time.h>
+#include <LiquidCrystal.h>
+#define buzzer 13
+LiquidCrystal lcd(12, 11, 5, 4, 3, 2); 
+
+int decreaseBtn=7;    
+int increaseBtn=8;
+int modeBtn=9;
+int setBtn=10;
+
+int HOUR,MINUTE,SECOND;
+int tempVar = 0;
+int clockSet = 0;
+int alarmSet = 1;
+
+unsigned long startDate = 1416614400; //Time between Jan 1, 1970 and Nov 22, 2014.
+bool showingDate = false;
+
+unsigned long timeUpdated = millis();
+unsigned long dateUpdated = -60000;
+const char *menuItems[] = {"Set Time?", "Set Date?", "Set Alarm?"};
+ 
+time_t t = now();
+
+
+void setup(){
+  Wire.begin();
+  lcd.begin(16,2);
+  Serial.begin(9600);
+
+  lcd.setCursor(0,1);
+  lcd.print("    Hi Sabs!    ");
+  setSyncProvider(RTC.get); //When syncing, get the time from the RTC
+  setSyncInterval(10); //Time will be synced with the RTC every n seconds
+  
+  pinMode(increaseBtn, INPUT);
+  pinMode(modeBtn, INPUT);
+  pinMode(setBtn, INPUT);
+  pinMode(buzzer, OUTPUT);
+  pinMode(decreaseBtn, INPUT);
+//  digitalWrite(decreaseBtn, HIGH);
+//  digitalWrite(modeBtn, HIGH);
+//  digitalWrite(setBtn, HIGH);
+//  digitalWrite(increaseBtn, HIGH);
+  
+  /*f(!RTC.begin()){
+      lcd.setCursor(5,0);
+      lcd.print("ERROR!");
+      lcd.setCursor(0,1);
+      lcd.print("RTC NOT FOUND");
+      while(1); 
+  }
+  
+  if(!RTC.isrunning()){
+    RTC.adjust(DateTime(F(__DATE__),F(__TIME__)));
+  }
+
+  */
+}
+void loop(){
+   //Check if the modeBtn has been pressed
+   Serial.println(String("in loop") + String(digitalRead(modeBtn)));
+   if(digitalRead(modeBtn) != LOW){      //setBtn Alarm time 
+     Serial.print("case 1");
+     beep();
+     lcd.clear();
+     menu();
+     beep();
+     beep();
+   }
+   //Update the time every second
+   if(millis()-timeUpdated>1000){
+    Serial.print("case 2");
+      displayTime();
+      displayDate(t, false);
+      showingDate = false;
+   }else{
+    Serial.print("case 3");
+      displayDate(t, true);t = now();
+      timeUpdated = millis(); 
+      displayTime();
+      Alarm.delay(0);
+   }
+
+   if(millis()-dateUpdated>60000){
+    Serial.print("case 4");
+      t=now();
+      dateUpdated = millis();
+      if(showingDate){
+        Serial.print("case 5");
+        showingDate = true;
+      }
+   }
+   
+   //If sync fails display error on the right end of the first row
+   if(timeStatus() != timeSet){
+    Serial.print("case 6");
+      timeSyncFail();
+   }
+}
+/*
+ * Using a while loop to avoid having to clear the lcd every time second. This way when the while function quits, the LCD clears once.
+ */
+
+void menu(){
+  int selectedItem = 0;
+  lcd.clear();
+  lcd.print(menuItems[selectedItem]);
+  delay(200);
+  
+  while(selectedItem<3){//Once the user loops through all the items, go back to the main menu
+    lcd.setCursor(9,0);
+    if(digitalRead(modeBtn) == HIGH && selectedItem!=3){
+      selectedItem++;
+      lcd.clear();
+      lcd.print(menuItems[selectedItem]);
+      delay(200);
+    }else if(digitalRead(modeBtn) == HIGH && selectedItem == 3){
+      break;
+      delay(200);
+    }
+
+    if(digitalRead(setBtn)==HIGH){
+      if(selectedItem == 0){
+        changeTime(clockSet);
+        break;//Quit the while loop and return back to the main screen
+      }
+      if(selectedItem == 1){
+        changeDate();
+        break;//Quit the while loop and return back to the main screen
+      }
+      if(selectedItem==2){
+        changeTime(alarmSet);
+        break;
+      }
+    }
+  }
+}
+
+void timeSyncFail(){
+  while(timeStatus() != timeSet){ 
+  Serial.print("case 6,1");
+    if(millis()-timeUpdated>1000){
+      Serial.print("case 6,2");
+      t = now();
+      timeUpdated = millis(); 
+      displayTime();
+      Alarm.delay(0);
+      lcd.setCursor(12,0);
+      lcd.print("!RTC"); //Display error msg on the far right of the first row
+   }
+
+   if(millis()-dateUpdated>60000){
+      Serial.print("case 6,3");
+      t=now();
+      dateUpdated = millis();
+      if(showingDate){
+        Serial.print("case 6,4");
+        displayDate(t, false);
+        showingDate = false;
+      }else{
+        Serial.print("case 6,5");
+        displayDate(t, true);
+        showingDate = true;
+      }
+   }
+  }
+  Serial.print("case 6,6");
+  lcd.clear();
+}
+
+void dailyAlarm(){ //Alarm was triggered
+  int triggerTime = minute(); //When the alarm was triggered
+  lcd.setCursor(14,0);
+  lcd.print("A");//Indicate that the alarm has been triggered
+  while(minute() - triggerTime < 5){//Check if the pillow sensor is triggered for 5 minutes
+     if(millis()-timeUpdated>1000){ //Update the time on screen as usual
+      t = now();
+      timeUpdated = millis(); 
+      displayDate(t, true);
+      displayTime();
+     }
+
+//     if(digitalRead(pillowSensor)==0){
+//      lcd.setCursor(0,1);
+//      
+//      lcd.print("IT WORKS! HAHAHA");
+//      alarmBeep();
+//      delay(200);
+//     }
+  }
+  lcd.clear();
+}
+
+//*************************************************************************************************************************************************
+//*********************************************************Time and Date Change Functions**********************************************************
+//*************************************************************************************************************************************************
+
+void changeTime(int MODE){
+  int hours=0, minutes=0, seconds=0;//Temporary storage for the desired time
+  unsigned long lastBlink = millis();
+  bool blinkBlank = false;
+  char selected = 'h';//What to adjust
+  delay(200);
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print("Setting Time");
+      
+  while(digitalRead(setBtn) == LOW){//Setting time will quit once the user presses the set button   
+
+    if(millis()-lastBlink >= 1000){
+      if(selected == 'h' && !blinkBlank){
+        lcd.setCursor(0,1);
+        lcd.print("  ");
+        blinkBlank = true;
+        lastBlink = millis();
+      }else if(selected == 'h' && blinkBlank){
+        lcd.setCursor(0,1);
+        lastBlink = millis();
+        
+        if(hours<10){
+          lcd.print("0");
+          lcd.print(hours);
+        }else{
+          lcd.print(hours);
+        }
+        lcd.print(":");
+      }
+
+      if(selected == 'h' && !blinkBlank){
+        lcd.setCursor(3,1);
+        lcd.print("  ");
+        blinkBlank = true;
+        lastBlink = millis();
+      }else if(selected == 'h' && blinkBlank){
+        lcd.setCursor(3,1);
+        lastBlink = millis();
+        
+        if(minutes<10){
+          lcd.print("0");
+          lcd.print(minutes);
+        }else{
+          lcd.print(minutes);
+        }
+          lcd.print(":"); 
+      }
+      if(selected == 'h' && !blinkBlank){
+        lcd.setCursor(6,1);
+        lcd.print("  ");
+        blinkBlank = true;
+        lastBlink = millis();
+      }else if(selected == 'h' && blinkBlank){
+        lcd.setCursor(6,1);
+        lastBlink = millis();
+        if(seconds<10){
+          lcd.print("0");
+          lcd.print(seconds);
+        }else{
+          lcd.print(seconds);
+        }
+      }
+     
+    }
+//****************************************************************************************************
+   
+      Serial.println(blinkBlank);
+      Serial.println(selected);
+      delay(50);
+
+    if(digitalRead(increaseBtn) == HIGH && selected == 'h'){//Increase the hours
+      if(hours == 24){//Loop back to zero
+        hours = 0;
+        lcd.clear();
+        lcd.print("Setting Time");
+      }else{
+        hours++;
+      }
+      delay(150);
+    }else if(digitalRead(increaseBtn) == HIGH && selected == 'm'){//Increase the minutes
+        if(minutes == 59){//Loop back to zero
+          minutes = 0;
+          lcd.clear();
+          lcd.print("Setting Time");
+        }else{
+          minutes++;
+        }
+      delay(150);
+    }else if(digitalRead(increaseBtn) == HIGH && selected == 's'){//Increase the seconds
+        if(seconds == 59){//Loop back to zero
+          seconds = 0;
+          lcd.clear();
+          lcd.print("Setting Time");
+        }else{
+          seconds++;
+        }
+      delay(150);
+    }
+
+    if(digitalRead(decreaseBtn) == HIGH && selected == 'h'){//Increase the hours
+      if(hours == 0){//Loop back to zero
+        hours = 24;
+        lcd.clear();
+        lcd.print("Setting Time");
+      }else{
+        hours--;
+      }
+      delay(150);
+    }else if(digitalRead(decreaseBtn) == HIGH && selected == 'm'){//Increase the minutes
+        if(minutes == 0){//Loop back to zero
+          minutes = 59;
+          lcd.clear();
+          lcd.print("Setting Time");
+        }else{
+          minutes--;
+        }
+      delay(150);
+    }else if(digitalRead(decreaseBtn) == HIGH && selected == 's'){//Increase the seconds
+        if(seconds == 0){//Loop back to zero
+          seconds = 59;
+          lcd.clear();
+          lcd.print("Setting Time");
+        }else{
+          seconds--;
+        }
+      delay(150);
+    }
+    
+
+    //On clicking the mode button move between hour, time, second for editing
+    if(digitalRead(modeBtn) == HIGH && selected == 'h'){
+        selected = 'm';
+        delay(200);
+    }else if(digitalRead(modeBtn) == HIGH && selected == 'm'){
+          selected = 's';
+          delay(200);
+    }else if(digitalRead(modeBtn) == HIGH && selected == 's'){
+          selected = 'h';
+          delay(200);
+    }
+  }
+  if(MODE == clockSet){
+    lcd.setCursor(0,0);
+    lcd.print("Setting Time");
+    setTime(hours, minutes, seconds, day(), month(), year()); //adjust local time
+    t=now(); //convert time to time_t form
+    RTC.set(t); //adjust time in the RTC
+    delay(1000);
+  }else if(MODE == alarmSet){
+    lcd.setCursor(0,0);
+    lcd.print("Setting Alarm");
+    Alarm.alarmRepeat(hours,minutes,seconds,dailyAlarm);
+    delay(1000);
+  }
+  delay(200);
+  lcd.clear();
+}
+
+void changeDate(){
+  int years=2016, months=1, days=1;
+  char selected = 'd';//Start by modifying the day
+  delay(200);
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print("Setting Date");
+    while(digitalRead(setBtn) == LOW){//Set the date and quit back to menu when the set button is pressed
+      lcd.setCursor(0,1);
+      lcd.print(days);
+      lcd.print("/");
+      lcd.print(months);
+      lcd.print("/");
+      lcd.print(years);
+        
+      if(digitalRead(increaseBtn) == HIGH && selected == 'd'){
+        if(days == 31){
+          days = 1;
+          lcd.clear();
+          lcd.setCursor(0,0);
+          lcd.print("Setting Date");
+        }else{
+          days++;
+        }
+        delay(200);
+      }else if(digitalRead(increaseBtn) == HIGH && selected == 'm'){
+        if(months == 12){
+          months = 1;
+          lcd.clear();
+          lcd.setCursor(0,0);
+          lcd.print("Setting Date");
+        }else{
+          months++;
+        }
+        delay(200);
+      }else if(digitalRead(increaseBtn) == HIGH && selected == 'y'){
+        if(years == 2050){
+          years = 2016;
+          lcd.clear();
+          lcd.setCursor(0,0);
+          lcd.print("Setting Date");
+        }else{
+          years++;
+        }
+        delay(200);
+        }
+
+    if(digitalRead(decreaseBtn) == HIGH && selected == 'd'){
+        if(days == 1){
+          days = 31;
+          lcd.clear();
+          lcd.setCursor(0,0);
+          lcd.print("Setting Date");
+        }else{
+          days--;
+        }
+        delay(200);
+      }else if(digitalRead(decreaseBtn) == HIGH && selected == 'm'){
+        if(months == 1){
+          months = 12;
+          lcd.clear();
+          lcd.setCursor(0,0);
+          lcd.print("Setting Date");
+        }else{
+          months--;
+        }
+        delay(200);
+      }else if(digitalRead(decreaseBtn) == HIGH && selected == 'y'){
+        if(years == 2016){
+          years = 2050;
+          lcd.clear();
+          lcd.setCursor(0,0);
+          lcd.print("Setting Date");
+        }else{
+          years--;
+        }
+        delay(200);
+        }
+        
+      if(digitalRead(modeBtn) == HIGH && selected == 'd'){ //if days are selected, on modeBtn click move to months
+        selected = 'm';
+        delay(200);
+      }else if(digitalRead(modeBtn) == HIGH && selected == 'm'){
+        selected = 'y';
+        delay(200);
+      }else if(digitalRead(modeBtn) == HIGH && selected == 'y'){
+        selected = 'd';
+        delay(200);
+      }
+    }
+  setTime(hour(), minute(), second(), days, months, years); //adjust local date
+  t=now(); //convert time to time_t form
+  RTC.set(t); //adjust time in the RTC
+  lcd.clear();
+  delay(200); 
+}
+
+//*************************************************************************************************************************************************
+////**************************************************************Display Functions****************************************************************
+//*************************************************************************************************************************************************
+
+void displayTime(){
+  lcd.setCursor(0,0);  
+  if(hour()<10){
+    lcd.print("0");
+  }
+  if(hour()>12){
+    lcd.print(HOUR=hour()-12, DEC); //Convert to 12 hour format
+  }else{
+    lcd.print(HOUR=hour(),DEC); 
+  }
+  lcd.print(":");
+  
+  if(minute()<10){
+    lcd.print("0");
+  }
+  lcd.print(MINUTE=minute(),DEC);
+  lcd.print(":");
+  
+  if(second()<10){
+    lcd.print("0");
+  }
+  lcd.print(SECOND=second(),DEC);
+
+  if(hour()>12){
+    lcd.setCursor(9,0);
+    lcd.print("PM");
+  }else{
+    lcd.setCursor(9,0);
+    lcd.print("AM");
+  }
+}
+
+void displayDate(time_t t, bool showDate){
+  if(showDate == true){
+    lcd.setCursor(0,1);
+    lcd.print(dayShortStr(weekday(t)));
+    lcd.print(" ");
+    lcd.print(monthShortStr(month(t)));
+    lcd.print(" ");
+    lcd.print(day(t));
+    lcd.print(", ");
+    lcd.print(year(t));
+  }else{
+    lcd.setCursor(0,1);
+    lcd.print((t - startDate)/86400); //Convert time between today and 22 Nov, 2015 to days. (Days we've been together)
+    lcd.print(" Days");
+  }
+
+}
+
+void defaultTime(){
+  lcd.setCursor(0,1);
+  lcd.print(HOUR);
+  lcd.print(":");
+  lcd.print(MINUTE);
+  lcd.print(":");
+  lcd.print(SECOND);
+}
+
+//*************************************************************************************************************************************************
+//************************************************************Haptic FeedBack Functions**************************************************************
+//*************************************************************************************************************************************************
+
+void beep(){
+   tone(13,300,10);
+}
+
+void alarmBeep(){
+  tone(13,1480,50);
+}
+
+
